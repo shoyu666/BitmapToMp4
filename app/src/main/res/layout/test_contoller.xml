@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" xmlns:tools="http://schemas.android.com/tools"
+              android:orientation="vertical"
+              android:layout_width="match_parent"
+              android:layout_height="match_parent">
+    <Button
+            android:text="start"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content" tools:layout_editor_absoluteY="82dp"
+            tools:layout_editor_absoluteX="148dp" android:id="@+id/RecordXView_StartButton"
+            android:visibility="gone"
+            tools:ignore="MissingConstraints"/>
+    <Button
+            android:text="stop"
+            android:layout_width="wrap_content"
+            android:visibility="gone"
+            android:layout_height="wrap_content" tools:layout_editor_absoluteY="303dp"
+            tools:layout_editor_absoluteX="148dp" android:id="@+id/RecordXView_PauseButton"
+            tools:ignore="MissingConstraints"/>
+</LinearLayout>
