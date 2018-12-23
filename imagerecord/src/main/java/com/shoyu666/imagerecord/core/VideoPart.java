@@ -4,9 +4,6 @@ import android.graphics.Rect;
 import android.media.MediaCodec;
 import android.media.MediaCodecInfo;
 import android.media.MediaFormat;
-
-import androidx.annotation.UiThread;
-
 import android.view.Choreographer;
 import android.view.Surface;
 
@@ -15,14 +12,16 @@ import com.shoyu666.imagerecord.log.MLog;
 
 import java.io.IOException;
 
+import androidx.annotation.UiThread;
+
 
 public class VideoPart implements Choreographer.FrameCallback {
     public static final String TAG = "VideoPart";
     public static final String MIME_TYPE = "video/avc";
-    public VideoFeedThread videoFeedThread;
+    public volatile VideoDispathDrawThread videoFeedThread;
     public volatile Surface surface;
     public Object surfaceLock = new Object();
-    public MediaCodec mMediaCodec;
+    public volatile MediaCodec mMediaCodec;
     public Rect mVideoRect;
     public volatile Surface surfaceCopy;
     public Mp4RecorderX mp4Recorder;
@@ -63,7 +62,7 @@ public class VideoPart implements Choreographer.FrameCallback {
     @UiThread
     public void startRecord() {
         if (videoFeedThread == null) {
-            videoFeedThread = new VideoFeedThread("VideoFeedThread", mp4Recorder);
+            videoFeedThread = new VideoDispathDrawThread("VideoDispathDrawThread", mp4Recorder);
             videoFeedThread.start();
             videoFeedThread.waitHandlerCreate();
         }
@@ -76,44 +75,40 @@ public class VideoPart implements Choreographer.FrameCallback {
 
 
     @Override
+    @UiThread
     public void doFrame(long frameTimeNanos) {
         synchronized (surfaceLock) {
-            if (surfaceCopy != null && mp4Recorder.mStageView != null && mp4Recorder.mStageView.stageBitmap != null) {
+            if (surfaceCopy != null && videoFeedThread != null) {
                 Choreographer.getInstance().postFrameCallback(this);
-                videoFeedThread.sendMessage(VideoFeedThread.VideoFeedThreadHandler.VideoFeedFrameMsg, (int) (frameTimeNanos >> 32), (int) frameTimeNanos);
-
+                MLog.d(TAG, "post VideoDoFrameMsg");
+                videoFeedThread.doFrame(VideoDispathDrawThread.VideoFeedThreadHandler.VideoDoFrameMsg, (int) (frameTimeNanos >> 32), (int) frameTimeNanos);
             }
         }
     }
 
-//    public Bitmap viewToBitmap(View view) {
-//        if (view == null) {
-//            return null;
+//    @UiThread
+//    public void sendeStopToMuxer() {
+//        if (videoFeedThread != null) {
+//            MLog.d(TAG, "sendEmptyMessage SendStopToMuxer");
+//            videoFeedThread.hanlder.sendEmptyMessage(VideoDispathDrawThread.VideoFeedThreadHandler.SendStopToMuxer);
 //        }
-//        int w = view.getWidth();
-//        int h = view.getHeight();
-//        if (w <= 0) {
-//            return null;
-//        }
-//        Bitmap cache = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
-//        Canvas canvas = new Canvas(cache);
-//        view.draw(canvas);
-//        return cache;
 //    }
 
     @UiThread
     public void pauseRecord() {
-        if (videoFeedThread != null) {
-            videoFeedThread.hanlder.removeMessages(VideoFeedThread.VideoFeedThreadHandler.VideoFeedFrameMsg);
-        }
         synchronized (surfaceLock) {
             surfaceCopy = null;
+            Choreographer.getInstance().removeFrameCallback(this);
+        }
+        if (videoFeedThread != null) {
+            MLog.d(TAG, "removeMessages VideoDoFrameMsg");
+            videoFeedThread.hanlder.removeMessages(VideoDispathDrawThread.VideoFeedThreadHandler.VideoDoFrameMsg);
         }
 //        mMediaCodec.stop();
     }
 
     @MarkMuxerThread
-    public void release() {
+    public synchronized void release() {
         if (mMediaCodec != null) {
             try {
                 mMediaCodec.stop();

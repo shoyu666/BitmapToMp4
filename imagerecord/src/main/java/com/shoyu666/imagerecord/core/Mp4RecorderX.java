@@ -4,17 +4,18 @@ package com.shoyu666.imagerecord.core;
 import android.media.MediaCodec;
 import android.media.MediaFormat;
 
-import androidx.annotation.UiThread;
-
 import com.shoyu666.imagerecord.doc.MarkMuxerThread;
 import com.shoyu666.imagerecord.event.Mp4RecorderXEvent;
 import com.shoyu666.imagerecord.log.MLog;
-import com.shoyu666.imagerecord.stage.StageView;
-
+import com.shoyu666.imagerecord.model.Mp4RecorderXLifecycleViewModel;
 
 import java.io.File;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.util.List;
+import java.util.Set;
+
+import androidx.annotation.UiThread;
 
 import static android.media.MediaCodec.BUFFER_FLAG_CODEC_CONFIG;
 import static android.media.MediaCodec.BUFFER_FLAG_END_OF_STREAM;
@@ -26,26 +27,25 @@ public class Mp4RecorderX {
     public AudioPart audioPart;
     public MediaMuxerPart mediaMuxerPart;
     public volatile long offset = 0;
-    public volatile long lastOffset = 0;
-    public volatile long mPauseTime = 0;
-    public StageView mStageView;
-    //
 
     public File outputFile;
+
+    public volatile Mp4RecorderXLifecycleViewModel lifecycleMp4RecorderX;
 
     private Mp4RecorderX(int video_width, int video_height, File outputFile) throws IOException {
         videoPart = new VideoPart(video_width, video_height, this);
         audioPart = new AudioPart(this);
-        //MarkMuxerThread start
         mediaMuxerPart = new MediaMuxerPart(outputFile, this);
     }
 
     @UiThread
-    public static Mp4RecorderX create(int video_width, int video_height, File outputFile) {
+    public static Mp4RecorderX create(Mp4RecorderXLifecycleViewModel lifecycleMp4RecorderX) {
         Mp4RecorderX recorder = null;
         try {
-            recorder = new Mp4RecorderX(video_width, video_height, outputFile);
-            recorder.outputFile = outputFile;
+            File outFile = lifecycleMp4RecorderX.getMp4File();
+            recorder = new Mp4RecorderX(lifecycleMp4RecorderX.getVideoWidth(), lifecycleMp4RecorderX.getVideoHeight(), outFile);
+            recorder.outputFile = outFile;
+            recorder.lifecycleMp4RecorderX = lifecycleMp4RecorderX;
         } catch (Exception e) {
             MLog.reportThrowable(e);
         }
@@ -55,8 +55,8 @@ public class Mp4RecorderX {
     @UiThread
     public void startRecord() {
         try {
-            this.lastOffset = this.offset;
-            this.offset += (System.nanoTime() / 1000) - this.mPauseTime;
+            Mp4RecorderXEvent.post(Mp4RecorderXEvent.Before_Start, null);
+            this.offset = (System.nanoTime() / 1000);
             videoPart.startRecord();
             audioPart.startRecord();
             mediaMuxerPart.startRecord();
@@ -69,9 +69,11 @@ public class Mp4RecorderX {
     @UiThread
     public void stopRecord() {
         try {
+            Mp4RecorderXEvent.post(Mp4RecorderXEvent.Before_Stop, null);
             videoPart.pauseRecord();
             audioPart.pauseRecord();
             mediaMuxerPart.stopRecord();
+//            videoPart.sendeStopToMuxer();
         } catch (Exception e) {
             Mp4RecorderXEvent.post(Mp4RecorderXEvent.Error, e);
             MLog.reportThrowable(e);
@@ -87,7 +89,7 @@ public class Mp4RecorderX {
         } else {
             MLog.d(TAG, "drainVideoEncoder");
         }
-        while (true) {
+        while (true&&this.videoPart.mMediaCodec!=null) {
             int dequeueOutputBuffer = this.videoPart.mMediaCodec.dequeueOutputBuffer(this.videoPart.mBufferInfo, (long) (this.videoPart.videoTrackId == -1 ? -1 : 0));
             if (dequeueOutputBuffer == INFO_OUTPUT_FORMAT_CHANGED) {
                 this.videoPart.videoTrackId = this.mediaMuxerPart.mediaMuxer.addTrack(this.videoPart.mMediaCodec.getOutputFormat());
@@ -101,16 +103,14 @@ public class Mp4RecorderX {
             } else {
                 if (dequeueOutputBuffer >= 0) {
                     ByteBuffer outputBuffer = this.videoPart.mMediaCodec.getOutputBuffer(dequeueOutputBuffer);
-//                    Assert.assertNotNull(outputBuffer);
-                    //
-                    MediaCodec.BufferInfo bufferInfo;
-                    if (this.videoPart.mBufferInfo.presentationTimeUs > this.mPauseTime) {
-                        bufferInfo = this.videoPart.mBufferInfo;
-                        bufferInfo.presentationTimeUs -= this.offset;
-                    } else {
-                        bufferInfo = this.videoPart.mBufferInfo;
-                        bufferInfo.presentationTimeUs -= this.lastOffset;
+                    MediaCodec.BufferInfo videoInfo = this.videoPart.mBufferInfo;
+                    if (videoInfo.size != 0) {
+                        outputBuffer.position(videoInfo.offset);
+                        outputBuffer.limit(videoInfo.offset + videoInfo.size);
                     }
+                    MediaCodec.BufferInfo bufferInfo = this.videoPart.mBufferInfo;
+                    bufferInfo.presentationTimeUs -= this.offset;
+                    //
                     if (this.videoPart.mBufferInfo.presentationTimeUs < this.videoPart.presentationTimeUs) {
                         this.videoPart.mBufferInfo.presentationTimeUs = this.videoPart.presentationTimeUs + 1000;
                     }
@@ -118,7 +118,7 @@ public class Mp4RecorderX {
 
                     if (this.videoPart.mBufferInfo.flags != BUFFER_FLAG_CODEC_CONFIG) {
                         this.mediaMuxerPart.mediaMuxer.writeSampleData(this.videoPart.videoTrackId, outputBuffer, this.videoPart.mBufferInfo);
-                        MLog.d(TAG, "drainVideoEncoder writeSampleData video  endOfStream= " + this.audioPart.mBufferInfo.presentationTimeUs + endOfStream);
+                        MLog.e(TAG, "video  write endOfStream= " + this.audioPart.mBufferInfo.presentationTimeUs + "  " + endOfStream);
                         //notify ui record ms
                         Mp4RecorderXEvent.post(Mp4RecorderXEvent.Muxer_Video_PresentationTimeUs, this.videoPart.presentationTimeUs);
                     }
@@ -144,17 +144,28 @@ public class Mp4RecorderX {
         }
         int dequeueOutputBuffer = this.audioPart.mMediaCodec.dequeueOutputBuffer(audioPart.mBufferInfo, 100);
         if (dequeueOutputBuffer == INFO_OUTPUT_FORMAT_CHANGED) {
-            this.audioPart.audioTrackId = this.mediaMuxerPart.mediaMuxer.addTrack(this.audioPart.mMediaCodec.getOutputFormat());
+            MediaFormat audioFormat = this.audioPart.mMediaCodec.getOutputFormat();
+            this.audioPart.audioTrackId = this.mediaMuxerPart.mediaMuxer.addTrack(audioFormat);
             this.mediaMuxerPart.mediaMuxer.start();
             //
-            MediaFormat outputFormat = this.videoPart.mMediaCodec.getOutputFormat();
-            ByteBuffer byteBuffer1 = outputFormat.getByteBuffer("csd-0");
+            ByteBuffer byteBuffer11 = audioFormat.getByteBuffer("csd-0");
+            if (byteBuffer11 != null) {
+                this.mediaMuxerPart.mediaMuxer.writeSampleData(this.audioPart.audioTrackId, byteBuffer11, this.audioPart.mBufferInfo);
+            }
+            ByteBuffer byteBuffer22 = audioFormat.getByteBuffer("csd-1");
+            if (byteBuffer22 != null) {
+                this.mediaMuxerPart.mediaMuxer.writeSampleData(this.audioPart.audioTrackId, byteBuffer22, this.audioPart.mBufferInfo);
+            }
+            //
+            //
+            MediaFormat videoFormat = this.videoPart.mMediaCodec.getOutputFormat();
+            ByteBuffer byteBuffer1 = videoFormat.getByteBuffer("csd-0");
             if (byteBuffer1 != null) {
                 this.mediaMuxerPart.mediaMuxer.writeSampleData(this.videoPart.videoTrackId, byteBuffer1, this.videoPart.mBufferInfo);
             }
-            ByteBuffer byteBuffer2 = outputFormat.getByteBuffer("csd-1");
+            ByteBuffer byteBuffer2 = videoFormat.getByteBuffer("csd-1");
             if (byteBuffer2 != null) {
-                this.mediaMuxerPart.mediaMuxer.writeSampleData(this.videoPart.videoTrackId, byteBuffer1, this.videoPart.mBufferInfo);
+                this.mediaMuxerPart.mediaMuxer.writeSampleData(this.videoPart.videoTrackId, byteBuffer2, this.videoPart.mBufferInfo);
             }
             //
         }
@@ -165,9 +176,14 @@ public class Mp4RecorderX {
                 }
                 if (dequeueOutputBuffer >= 0) {
                     ByteBuffer outputBuffer = this.audioPart.mMediaCodec.getOutputBuffer(dequeueOutputBuffer);
-                    if (this.audioPart.mBufferInfo.flags != BUFFER_FLAG_CODEC_CONFIG && this.audioPart.mBufferInfo.presentationTimeUs > this.audioPart.presentationTimeUs) {
+                    MediaCodec.BufferInfo audioInfo = this.audioPart.mBufferInfo;
+                    if (audioInfo.size != 0) {
+                        outputBuffer.position(audioInfo.offset);
+                        outputBuffer.limit(audioInfo.offset + audioInfo.size);
+                    }
+                    if (audioInfo.flags != BUFFER_FLAG_CODEC_CONFIG && audioInfo.presentationTimeUs > this.audioPart.presentationTimeUs) {
                         this.mediaMuxerPart.mediaMuxer.writeSampleData(this.audioPart.audioTrackId, outputBuffer, this.audioPart.mBufferInfo);
-                        MLog.d(TAG, "writeSampleData audio  endOfStream= " + this.audioPart.mBufferInfo.presentationTimeUs + endOfStream);
+                        MLog.d(TAG, "audio  write endOfStream= " + this.audioPart.mBufferInfo.presentationTimeUs + "   " + endOfStream);
                         this.audioPart.presentationTimeUs = this.audioPart.mBufferInfo.presentationTimeUs;
                     }
                     this.audioPart.mMediaCodec.releaseOutputBuffer(dequeueOutputBuffer, false);
@@ -177,11 +193,11 @@ public class Mp4RecorderX {
                 return;
             }
         }
-        release();
+        release(true);
     }
 
     @MarkMuxerThread
-    public void release() {
+    public void release(boolean workThread) {
         try {
             videoPart.release();
         } catch (Exception e) {
@@ -193,16 +209,28 @@ public class Mp4RecorderX {
             MLog.reportThrowable(e);
         }
         try {
-            mediaMuxerPart.release();
+            mediaMuxerPart.release(workThread);
         } catch (Exception e) {
             MLog.reportThrowable(e);
-        }
-        if (mStageView != null) {
-            mStageView = null;
         }
     }
 
     public boolean isRecording() {
         return audioPart.isAudioRecording();
+    }
+
+    public long getCurrentDuration() {
+        long duration = 0;
+        if (audioPart != null && videoPart != null) {
+            long a = audioPart.presentationTimeUs;
+            long v = videoPart.presentationTimeUs;
+            long biger = Math.max(a, v);
+            duration = biger / 1000;
+        }
+        return duration;
+    }
+
+    public synchronized Set<IVideoFeeder> getAllVideoFeed() {
+        return lifecycleMp4RecorderX.getAllVideoFeeder();
     }
 }

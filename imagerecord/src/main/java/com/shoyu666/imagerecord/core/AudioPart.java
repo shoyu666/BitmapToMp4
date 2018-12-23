@@ -6,17 +6,24 @@ import android.media.MediaCodec;
 import android.media.MediaFormat;
 import android.media.MediaRecorder;
 import android.os.Build;
+import android.os.Environment;
 
 
 import androidx.annotation.UiThread;
+
+import com.shoyu666.imagerecord.BuildConfig;
 import com.shoyu666.imagerecord.doc.MarkMuxerThread;
 import com.shoyu666.imagerecord.event.Mp4RecorderXEvent;
 import com.shoyu666.imagerecord.log.MLog;
 
 
+import java.io.File;
 import java.io.IOException;
+import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 
+import static android.media.AudioRecord.READ_NON_BLOCKING;
 import static android.media.AudioRecord.RECORDSTATE_RECORDING;
 import static com.shoyu666.imagerecord.event.Mp4RecorderXEvent.Audio_QueueInputBuffer;
 
@@ -27,9 +34,9 @@ public class AudioPart {
     public MediaCodec mMediaCodec;
     public static final int SAMPLE_RATE = 44100;
     public static final int BIT_RATE = 128000;
-    public static final int ChannelConfig = AudioFormat.CHANNEL_IN_STEREO;
+    public static final int ChannelConfig = AudioFormat.CHANNEL_IN_MONO;
     public static final int PCM_BIT = AudioFormat.ENCODING_PCM_16BIT;
-    public static final int ChannelCount = 2;
+    public static final int ChannelCount = 1;
     private byte[] mBuffer;
     private int bufferSize;
     public Mp4RecorderX mp4Recorder;
@@ -37,7 +44,6 @@ public class AudioPart {
     public MediaCodec.BufferInfo mBufferInfo = new MediaCodec.BufferInfo();
     public int audioTrackId = -1;
     public volatile long presentationTimeUs = 0;
-
 
     //
     public AudioPart(Mp4RecorderX mp4Recorder) throws IOException {
@@ -51,10 +57,7 @@ public class AudioPart {
     }
 
     private int getCompatibleAudioSource() {
-        int audioSoure = MediaRecorder.AudioSource.VOICE_COMMUNICATION;
-        if ("OnePlus".equals(Build.BRAND)) {
-            audioSoure = MediaRecorder.AudioSource.VOICE_RECOGNITION;
-        }
+        int audioSoure = MediaRecorder.AudioSource.MIC;
         return audioSoure;
     }
 
@@ -103,17 +106,23 @@ public class AudioPart {
         mMediaCodec.configure(createAudioFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
     }
 
+
     @MarkMuxerThread
     public void feed(long offset) {
-        if (audioRecord != null && audioRecord.read(mBuffer, 0, bufferSize) != -3) {
-            long nanoTime = (System.nanoTime() / 1000) - offset;
-            int dequeueInputBuffer = mMediaCodec.dequeueInputBuffer(-1);
-            ByteBuffer inputBuffer = mMediaCodec.getInputBuffer(dequeueInputBuffer);
-//            Assert.assertNotNull("Audio InputBuffer is null", inputBuffer);
-            inputBuffer.put(mBuffer);
-            mMediaCodec.queueInputBuffer(dequeueInputBuffer, 0, bufferSize, nanoTime, 0);
-            mp4Recorder.drainAudioEncoder(false);
-            Mp4RecorderXEvent.post(Audio_QueueInputBuffer, mBuffer);
+        if (audioRecord != null) {
+            int readSize = audioRecord.read(mBuffer, 0, bufferSize);
+            if (readSize > 0) {
+                long nanoTime = (System.nanoTime() / 1000) - offset;
+                int dequeueInputBuffer = mMediaCodec.dequeueInputBuffer(-1);
+                if (dequeueInputBuffer != -1) {
+                    ByteBuffer inputBuffer = mMediaCodec.getInputBuffer(dequeueInputBuffer);
+                    inputBuffer.clear();
+                    inputBuffer.put(mBuffer);
+                    mMediaCodec.queueInputBuffer(dequeueInputBuffer, 0, readSize, nanoTime, 0);
+                    mp4Recorder.drainAudioEncoder(false);
+                    Mp4RecorderXEvent.post(Audio_QueueInputBuffer, mBuffer);
+                }
+            }
         }
     }
 

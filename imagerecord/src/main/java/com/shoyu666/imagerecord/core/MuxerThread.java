@@ -37,7 +37,9 @@ public class MuxerThread extends HandlerThread {
 
     @UiThread
     public void stopRecord() {
+        MLog.d(TAG, "stopRecord");
         hanlder.removeMessages(DrainMsg);
+        MLog.d(TAG, "Msg_StopRecord");
         hanlder.sendEmptyMessage(MuxerThreadHanlder.Msg_StopRecord);
     }
 
@@ -59,8 +61,11 @@ public class MuxerThread extends HandlerThread {
                         MLog.d(TAG, "#####DrainMsg");
                         if (mp4Recorder != null) {
                             mp4Recorder.drainVideoEncoder(false);
+                            MLog.d(TAG, "#####DrainMsg 1");
                             mp4Recorder.audioPart.feed(mp4Recorder.offset);
+                            MLog.d(TAG, "#####DrainMsg 2");
                         }
+                        MLog.d(TAG, "#####DrainMsg  end");
                     } catch (Exception e) {
                         error(e);
                     }

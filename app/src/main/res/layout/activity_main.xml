@@ -1,24 +1,23 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout
+<FrameLayout
         xmlns:android="http://schemas.android.com/apk/res/android"
         xmlns:tools="http://schemas.android.com/tools"
-        xmlns:app="http://schemas.android.com/apk/res-auto"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         tools:context=".MainActivity"
         android:orientation="vertical">
 
-    <com.shoyu666.record.view.RecordXView
-            android:id="@+id/RecordXView"
-            android:layout_width="match_parent"
-                                               android:layout_height="wrap_content"
-    app:controller="@layout/test_contoller"></com.shoyu666.record.view.RecordXView>
 
+    <com.shoyu666.record.MyStageSurfaceView
+            android:id="@+id/SurfaceView"
+            android:layout_width="match_parent" android:layout_height="match_parent"/>
     <TextView
             android:text="TextView"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content" android:id="@+id/textView"/>
-    <com.shoyu666.record.TestStageSurfaceView
-            android:id="@+id/SurfaceView"
-            android:layout_width="match_parent" android:layout_height="match_parent"/>
-</LinearLayout>
+    <com.shoyu666.record.view.MyRecordXView
+            android:id="@+id/RecordXView"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+    ></com.shoyu666.record.view.MyRecordXView>
+</FrameLayout>

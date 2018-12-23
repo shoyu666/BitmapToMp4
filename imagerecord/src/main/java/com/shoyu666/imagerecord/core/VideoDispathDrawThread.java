@@ -1,6 +1,5 @@
 package com.shoyu666.imagerecord.core;
 
-import android.graphics.Bitmap;
 import android.graphics.Rect;
 import android.opengl.GLES20;
 import android.os.Handler;
@@ -10,17 +9,26 @@ import android.os.Message;
 
 import com.android.grafika.gles.EglCore;
 import com.android.grafika.gles.WindowSurface;
+import com.shoyu666.imagerecord.doc.MarkVideoFeedThread;
 import com.shoyu666.imagerecord.log.MLog;
 
-public class VideoFeedThread extends HandlerThread {
-    public static final String TAG = "VideoFeedThread";
+import java.util.Iterator;
+import java.util.List;
+import java.util.Set;
+
+import androidx.annotation.UiThread;
+
+public class VideoDispathDrawThread extends HandlerThread {
+    public static final String TAG = "VideoDispathDrawThread";
     public Mp4RecorderX mp4Recorder;
     public VideoFeedThreadHandler hanlder;
     public WindowSurface codeWindowSurface;
     private EglCore mEglCore;
-    public GLBitmap glBitmap;
 
-    public VideoFeedThread(String name, Mp4RecorderX mp4Recorder) {
+    public BitmapFeeder defaultFeeder = new DefaultBitmapFeeder();
+
+    @UiThread
+    public VideoDispathDrawThread(String name, Mp4RecorderX mp4Recorder) {
         super(name);
         this.mp4Recorder = mp4Recorder;
         mEglCore = new EglCore(null, EglCore.FLAG_RECORDABLE | EglCore.FLAG_TRY_GLES3);
@@ -34,9 +42,7 @@ public class VideoFeedThread extends HandlerThread {
                 MLog.reportThrowable(e);
             }
         }
-        if (glBitmap != null) {
-            glBitmap.release();
-        }
+        releaseDrawers();
         if (mEglCore != null) {
             try {
                 mEglCore.release();
@@ -46,17 +52,33 @@ public class VideoFeedThread extends HandlerThread {
         }
     }
 
+    private void releaseDrawers() {
+        Set<IVideoFeeder> drawers = mp4Recorder.getAllVideoFeed();
+        if (drawers == null || drawers.size() == 0) {
+            return;
+        }
+        Iterator<IVideoFeeder> iterator = drawers.iterator();
+        while (iterator.hasNext()) {
+            IVideoFeeder drawer = iterator.next();
+            drawer.relese();
+        }
+    }
+
+    @UiThread
     public void waitHandlerCreate() {
         hanlder = new VideoFeedThreadHandler(this.getLooper());
     }
 
-    public void sendMessage(int what, int arg1, int arg2) {
+
+    @UiThread
+    public void doFrame(int what, int arg1, int arg2) {
         hanlder.sendMessage(hanlder.obtainMessage(what, arg1, arg2));
     }
 
     public class VideoFeedThreadHandler extends Handler {
 
-        public static final int VideoFeedFrameMsg = 1;
+        public static final int VideoDoFrameMsg = 1;
+        public static final int SendStopToMuxer = 2;
 
         public VideoFeedThreadHandler(Looper looper) {
             super(looper);
@@ -66,19 +88,22 @@ public class VideoFeedThread extends HandlerThread {
         public void handleMessage(Message msg) {
             super.handleMessage(msg);
             switch (msg.what) {
-                case VideoFeedFrameMsg:
+                case VideoDoFrameMsg:
                     long timeStampNanos = (((long) msg.arg1) << 32) |
                             (((long) msg.arg2) & 0xffffffffL);
                     if (drop(timeStampNanos)) {
                         return;
                     }
                     try {
-                        feed();
+                        long frameTime = System.nanoTime();
+                        tryDispatchDraw(frameTime);
                     } catch (Exception e) {
                         MLog.reportThrowable(e);
                     } catch (OutOfMemoryError outOfMemoryError) {
                         MLog.reportError(outOfMemoryError);
                     }
+                    break;
+                case SendStopToMuxer:
                     break;
             }
         }
@@ -94,7 +119,8 @@ public class VideoFeedThread extends HandlerThread {
         return pass;
     }
 
-    public void feed() {
+    @MarkVideoFeedThread
+    public void tryDispatchDraw(long timeStampNanos) {
         MLog.d(TAG, "#####feed");
         if (mp4Recorder != null && mp4Recorder.videoPart != null) {
             synchronized (mp4Recorder.videoPart.surfaceLock) {
@@ -106,43 +132,36 @@ public class VideoFeedThread extends HandlerThread {
                     codeWindowSurface.makeCurrent();
                 }
                 if (codeWindowSurface != null) {
-                    drawBitmapToCode();
+                    dispatchDraw(timeStampNanos);
                 }
             }
         }
         MLog.d(TAG, "#####feed end");
     }
 
-    private void drawBitmapToCode() {
-        Bitmap snap = mp4Recorder.mStageView.stageBitmap;
+    @MarkVideoFeedThread
+    private void dispatchDraw(long timeStampNanos) {
         Rect mVideoRect = mp4Recorder.videoPart.mVideoRect;
-        long timeStampNanos = System.nanoTime();
-        if (snap == null || snap.isRecycled()) {
-            MLog.e(TAG, "inisValide");
-            return;
-        }
-        int viewWidth = snap.getWidth();
-        int viewHeight = snap.getHeight();
-        if (glBitmap == null) {
-            glBitmap = new GLBitmap();
-            glBitmap.fix(snap, mVideoRect.width(), mVideoRect.height());
-        }
         mp4Recorder.mediaMuxerPart.frameAvailableSoon();
         codeWindowSurface.makeCurrent();
-        GLES20.glViewport(0, 0, viewWidth, viewHeight);
-        //
         GLES20.glClearColor(0f, 0f, 0f, 1f);
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT);
-
         GLES20.glViewport(mVideoRect.left, mVideoRect.top,
                 mVideoRect.width(), mVideoRect.height());
-        GLES20.glEnable(GLES20.GL_SCISSOR_TEST);
-        GLES20.glScissor(mVideoRect.left, mVideoRect.top,
-                mVideoRect.width(), mVideoRect.height());
-        glBitmap.draw(snap, timeStampNanos);
-        GLES20.glDisable(GLES20.GL_SCISSOR_TEST);
+        boolean hasDraw = false;
+        Set<IVideoFeeder> drawers = mp4Recorder.getAllVideoFeed();
+        if (drawers != null && drawers.size() > 0) {
+            Iterator<IVideoFeeder> iterator = drawers.iterator();
+            while (iterator.hasNext()) {
+                IVideoFeeder drawer = iterator.next();
+                boolean drawed = drawer.draw(mVideoRect, timeStampNanos);
+                hasDraw = drawed ? drawed : hasDraw;
+            }
+        }
+        if (!hasDraw) {
+            defaultFeeder.draw(mVideoRect, timeStampNanos);
+        }
         codeWindowSurface.setPresentationTime(timeStampNanos);
         codeWindowSurface.swapBuffers();
-//        feedBitmap.recycle();
     }
 }
